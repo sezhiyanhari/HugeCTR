@@ -186,8 +186,15 @@ EmbeddingCache<TypeHashKey>::EmbeddingCache(const InferenceParams& inference_par
     cache_config_.num_set_in_cache_.reserve(cache_config_.num_emb_table_);
     for (size_t i = 0; i < cache_config_.num_emb_table_; i++) {
       const size_t row_num = ps_config.embedding_key_count_.at(inference_params.model_name)[i];
+      // Hari: embedding cache per embedding table created here
       size_t num_feature_in_cache = static_cast<size_t>(
           static_cast<double>(cache_config_.cache_size_percentage_) * static_cast<double>(row_num));
+      // Hari: changes
+      HCTR_LOG(
+          INFO, ROOT,
+          "Embedding table idx %zu, row_num %zu, num_feature_in_cache %zu, num_emb_table: %zu \n",
+          i, row_num, num_feature_in_cache, cache_config_.num_emb_table_);
+
       if (num_feature_in_cache < SLAB_SIZE * SET_ASSOCIATIVITY) {
         num_feature_in_cache = SLAB_SIZE * SET_ASSOCIATIVITY;
         HCTR_LOG(INFO, ROOT,
@@ -260,6 +267,8 @@ template <typename TypeHashKey>
 void EmbeddingCache<TypeHashKey>::lookup(size_t const table_id, float* const d_vectors,
                                          const void* const h_keys, size_t const num_keys,
                                          float const hit_rate_threshold, cudaStream_t stream) {
+  // Hari: changes
+  HCTR_LOG(INFO, ROOT, "Lookup function called...");
   MemoryBlock* memory_block = nullptr;
   BaseUnit* start = profiler::start();
   while (memory_block == nullptr) {
