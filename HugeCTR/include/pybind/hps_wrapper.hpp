@@ -98,6 +98,8 @@ HPS::HPS(const std::string& hps_json_config_file) : ps_config_{hps_json_config_f
 HPS::HPS(parameter_server_config& ps_config) : ps_config_(ps_config) { initialize(); }
 
 void HPS::initialize() {
+  // Hari changes
+  HCTR_LOG(INFO, ROOT, "HPS initialize called\n");
   parameter_server_ = HierParameterServerBase::create(ps_config_);
   for (auto& inference_params : ps_config_.inference_params_array) {
     std::map<int64_t, std::shared_ptr<LookupSessionBase>> lookup_sessions;
@@ -226,6 +228,8 @@ void HPS::lookup_fromdlpack(pybind11::capsule& keys, pybind11::capsule& vectors,
 pybind11::array_t<float> HPS::lookup(pybind11::array_t<size_t>& h_keys,
                                      const std::string& model_name, size_t table_id,
                                      int64_t device_id) {
+  // Hari: this is the entrypoint into the C++ backend from the Python hps.lookup() call
+  HCTR_LOG(INFO, ROOT, "HPS lookup called, table_id: %zu, device_id: %ld\n", table_id, device_id);
   if (lookup_session_map_.find(model_name) == lookup_session_map_.end()) {
     HCTR_OWN_THROW(Error_t::WrongInput, "The model name does not exist in HPS.");
   }
@@ -245,6 +249,8 @@ pybind11::array_t<float> HPS::lookup(pybind11::array_t<size_t>& h_keys,
   // Handle both keys of both long long and unsigned int
   void* key_ptr;
   if (inference_params.i64_input_key) {
+    // Hari: code enters this conditional
+    HCTR_LOG(INFO, ROOT, "DEBUG: i64_input_key\n");
     key_ptr = static_cast<void*>(key_buf.ptr);
   } else {
     unsigned int* h_keys = h_keys_per_table_map_.find(model_name)->second[table_id];
@@ -261,6 +267,7 @@ pybind11::array_t<float> HPS::lookup(pybind11::array_t<size_t>& h_keys,
   const auto& lookup_session = lookup_session_map_.find(model_name)->second.find(device_id)->second;
   auto& d_vectors_per_table =
       d_vectors_per_table_map_.find(model_name)->second.find(device_id)->second;
+  // Hari: lookup call (1)
   lookup_session->lookup(key_ptr, d_vectors_per_table[table_id], num_keys, table_id);
   std::vector<size_t> vector_shape{static_cast<size_t>(key_buf.shape[0]),
                                    embedding_size_per_table[table_id]};

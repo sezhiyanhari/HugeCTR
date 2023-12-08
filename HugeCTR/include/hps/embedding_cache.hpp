@@ -91,6 +91,7 @@ class EmbeddingCache : public EmbeddingCacheBase,
   // The cache configuration
   embedding_cache_config cache_config_;
 
+  // Hari: vector to points of embedding caches => one per embedding table
   // The shared thread-safe embedding cache
   std::vector<std::unique_ptr<gpu_cache::gpu_cache_api<TypeHashKey>>> gpu_emb_caches_;
 

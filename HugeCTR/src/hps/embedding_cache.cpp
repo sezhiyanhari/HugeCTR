@@ -217,10 +217,16 @@ EmbeddingCache<TypeHashKey>::EmbeddingCache(const InferenceParams& inference_par
     // Allocate resources.
     gpu_emb_caches_.reserve(cache_config_.num_emb_table_);
     for (size_t i = 0; i < cache_config_.num_emb_table_; i++) {
+      // Hari changes
       if (cache_config_.use_hctr_cache_implementation) {
+        // Hari: use_hctr_cache_implementation is enabled, code follows this line
+        // emplace_back logically equivalent to push_back
         gpu_emb_caches_.emplace_back(std::make_unique<NVCache>(
             cache_config_.num_set_in_cache_[i], cache_config_.embedding_vec_size_[i]));
+        HCTR_LOG(INFO, ROOT, "use_hctr_cache_implementation = TRUE, gpu_emb_caches len: %zu\n",
+                 gpu_emb_caches_.size());
       } else {
+        HCTR_LOG(INFO, ROOT, "use_hctr_cache_implementation = FALSE");
         gpu_emb_caches_.emplace_back(std::make_unique<EmbeddingCacheWrapper<TypeHashKey>>(
             cache_config_.num_set_in_cache_[i], cache_config_.embedding_vec_size_[i]));
       }
@@ -263,12 +269,14 @@ EmbeddingCache<TypeHashKey>::~EmbeddingCache() {
   }
 }
 
+// Hari: at this point, it looks like the system knows which keys are not in the device
+// and need to retrieved from the host
 template <typename TypeHashKey>
 void EmbeddingCache<TypeHashKey>::lookup(size_t const table_id, float* const d_vectors,
                                          const void* const h_keys, size_t const num_keys,
                                          float const hit_rate_threshold, cudaStream_t stream) {
   // Hari: changes
-  HCTR_LOG(INFO, ROOT, "Lookup function called...");
+  HCTR_LOG(INFO, ROOT, "DEBUG: Lookup function called...\n");
   MemoryBlock* memory_block = nullptr;
   BaseUnit* start = profiler::start();
   while (memory_block == nullptr) {
@@ -278,6 +286,8 @@ void EmbeddingCache<TypeHashKey>::lookup(size_t const table_id, float* const d_v
   ec_profiler_->end(start, "Apply for workspace from the memory pool for Embedding Cache Lookup");
   EmbeddingCacheWorkspace workspace_handler = memory_block->worker_buffer;
   if (cache_config_.use_gpu_embedding_cache_) {
+    HCTR_LOG(INFO, ROOT, "table_id: %zu, nums_keys: %zu, hit_rate_threshold: %f\n", table_id,
+             num_keys, hit_rate_threshold);
     CudaDeviceContext dev_restorer;
     dev_restorer.check_device(cache_config_.cuda_dev_id_);
 
@@ -288,11 +298,13 @@ void EmbeddingCache<TypeHashKey>::lookup(size_t const table_id, float* const d_v
     ec_profiler_->end(start, "Copy the input to workspace of Embedding Cache",
                       ProfilerType_t::Timeliness, stream);
     start = profiler::start();
+    // Hari: call into lookup_from_device
     lookup_from_device(table_id, d_vectors, memory_block, num_keys, hit_rate_threshold, stream);
     ec_profiler_->end(start, "Lookup the embedding keys from Embedding Cache");
   }
   // Not using GPU embedding cache
   else {
+    HCTR_LOG(DEBUG, ROOT, "NOT USING EMBEDDING CACHE");
     memcpy(workspace_handler.h_embeddingcolumns_[table_id], h_keys, num_keys * sizeof(TypeHashKey));
     start = profiler::start();
     parameter_server_->lookup(workspace_handler.h_embeddingcolumns_[table_id], num_keys,
@@ -361,6 +373,7 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
                                                      size_t const num_keys,
                                                      float const hit_rate_threshold,
                                                      cudaStream_t stream) {
+  HCTR_LOG(INFO, ROOT, "lookup_from_device embedding_cache.cpp\n");
   EmbeddingCacheWorkspace workspace_handler = memory_block->worker_buffer;
   if (cache_config_.use_gpu_embedding_cache_) {
     CudaDeviceContext dev_restorer;
@@ -404,9 +417,12 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
     }
 
     bool async_insert_flag{workspace_handler.h_hit_rate_[table_id] >= hit_rate_threshold};
+    // Hari changes
+    HCTR_LOG(INFO, ROOT, "Cache hit rate: %f\n", workspace_handler.h_hit_rate_[table_id]);
     start = profiler::start(workspace_handler.h_hit_rate_[table_id], ProfilerType_t::Occupancy);
     ec_profiler_->end(start, "The hit rate of Embedding Cache", ProfilerType_t::Occupancy);
 
+    // Hari: missing keys handled here
     // Handle the missing keys mode 1: synchronous
     if (!async_insert_flag) {
       start = profiler::start();

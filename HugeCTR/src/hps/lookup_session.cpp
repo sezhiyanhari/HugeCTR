@@ -245,6 +245,9 @@ void LookupSession::lookup_from_device_impl(const void* d_keys, float* d_vectors
 
 void LookupSession::lookup_impl(const void* const h_keys, float* const d_vectors,
                                 const size_t num_keys, const size_t table_id, cudaStream_t stream) {
+  // Hari: lookup session calls embedding cache here
+  // Hari: lookup call (2)
+  HCTR_LOG(INFO, ROOT, "lookup_impl called from lookup_session.cpp\n");
   CudaDeviceContext dev_restorer;
   dev_restorer.set_device(inference_params_.device_id);
   embedding_cache_->lookup(table_id, d_vectors, h_keys, num_keys,

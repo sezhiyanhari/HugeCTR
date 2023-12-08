@@ -525,6 +525,7 @@ __global__ void get_kernel(const key_type* d_keys, const size_t len, float* d_va
   warp_position = warp_tile.shfl(warp_position, 0);
 
   if (lane_idx < warp_missing_counter) {
+    // Hari: missing keys/indices here => array same size as the input
     d_missing_keys[warp_position + lane_idx] = missing_key;
     d_missing_index[warp_position + lane_idx] = missing_index;
   }
