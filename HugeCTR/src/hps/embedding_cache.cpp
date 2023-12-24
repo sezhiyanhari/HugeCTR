@@ -184,12 +184,14 @@ EmbeddingCache<TypeHashKey>::EmbeddingCache(const InferenceParams& inference_par
   // Query the size of all embedding tables and calculate the size of each embedding cache
   if (cache_config_.use_gpu_embedding_cache_) {
     cache_config_.num_set_in_cache_.reserve(cache_config_.num_emb_table_);
+    cache_config_.num_set_in_full_cache_.reserve(cache_config_.num_emb_table_);
     for (size_t i = 0; i < cache_config_.num_emb_table_; i++) {
       const size_t row_num = ps_config.embedding_key_count_.at(inference_params.model_name)[i];
       // Hari: embedding cache per embedding table created here
       size_t num_feature_in_cache = static_cast<size_t>(
           static_cast<double>(cache_config_.cache_size_percentage_) * static_cast<double>(row_num));
       // Hari: changes
+      size_t num_feature_in_full_cache = static_cast<size_t>(static_cast<double>(row_num));
       HCTR_LOG(
           INFO, ROOT,
           "Embedding table idx %zu, row_num %zu, num_feature_in_cache %zu, num_emb_table: %zu \n",
@@ -205,6 +207,10 @@ EmbeddingCache<TypeHashKey>::EmbeddingCache(const InferenceParams& inference_par
       cache_config_.num_set_in_cache_.emplace_back(
           (num_feature_in_cache + SLAB_SIZE * SET_ASSOCIATIVITY - 1) /
           (SLAB_SIZE * SET_ASSOCIATIVITY));
+      // Hari: changes
+      cache_config_.num_set_in_full_cache_.emplace_back(
+          (num_feature_in_full_cache + SLAB_SIZE * SET_ASSOCIATIVITY - 1) /
+          (SLAB_SIZE * SET_ASSOCIATIVITY));
     }
   }
 
@@ -216,6 +222,7 @@ EmbeddingCache<TypeHashKey>::EmbeddingCache(const InferenceParams& inference_par
 
     // Allocate resources.
     gpu_emb_caches_.reserve(cache_config_.num_emb_table_);
+    gpu_emb_full_caches_.reserve(cache_config_.num_emb_table_);
     for (size_t i = 0; i < cache_config_.num_emb_table_; i++) {
       // Hari changes
       if (cache_config_.use_hctr_cache_implementation) {
@@ -266,6 +273,7 @@ EmbeddingCache<TypeHashKey>::~EmbeddingCache() {
     refresh_streams_.clear();
 
     gpu_emb_caches_.clear();
+    gpu_emb_full_caches_.clear();
   }
 }
 

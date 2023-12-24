@@ -407,6 +407,7 @@ struct embedding_cache_config {
   // Each vector will have the size of E(# of embedding tables in the model)
   std::vector<size_t> embedding_vec_size_;  // # of float in emb_vec
   std::vector<size_t> num_set_in_cache_;    // # of cache set in the cache
+  std::vector<size_t> num_set_in_full_cache_;
   std::vector<std::string>
       embedding_table_name_;  // ## of embedding tables be cached by current embedding cache
   std::vector<size_t>

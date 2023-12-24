@@ -95,6 +95,9 @@ class EmbeddingCache : public EmbeddingCacheBase,
   // The shared thread-safe embedding cache
   std::vector<std::unique_ptr<gpu_cache::gpu_cache_api<TypeHashKey>>> gpu_emb_caches_;
 
+  // Hari: vector of
+  std::vector<std::unique_ptr<gpu_cache::gpu_cache_api<TypeHashKey>>> gpu_emb_full_caches_;
+
   // streams for asynchronous parameter server insert threads
   std::vector<cudaStream_t> insert_streams_;
 
