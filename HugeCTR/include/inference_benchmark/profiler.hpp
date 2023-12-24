@@ -33,7 +33,7 @@ namespace HugeCTR {
 
 /// Holds the server-side inference statisitcs of the target model and its
 /// composing models
-#ifdef BENCHMARK_HPS
+// #ifdef BENCHMARK_HPS
 class profiler {
  public:
   profiler(ProfilerTarget_t target = ProfilerTarget_t::REST) {
@@ -106,6 +106,7 @@ class profiler {
   Profiler_Config config_;
 };
 
+/*
 #else
 class profiler {
  public:
@@ -141,5 +142,6 @@ class profiler {
   Profiler_Config config_;
 };
 #endif
+*/
 
 }  // namespace HugeCTR

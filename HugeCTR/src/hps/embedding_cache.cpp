@@ -301,6 +301,7 @@ void EmbeddingCache<TypeHashKey>::lookup(size_t const table_id, float* const d_v
     // Hari: call into lookup_from_device
     lookup_from_device(table_id, d_vectors, memory_block, num_keys, hit_rate_threshold, stream);
     ec_profiler_->end(start, "Lookup the embedding keys from Embedding Cache");
+    ec_profiler_->print();
   }
   // Not using GPU embedding cache
   else {
@@ -418,7 +419,7 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
 
     bool async_insert_flag{workspace_handler.h_hit_rate_[table_id] >= hit_rate_threshold};
     // Hari changes
-    HCTR_LOG(INFO, ROOT, "Cache hit rate: %f\n", workspace_handler.h_hit_rate_[table_id]);
+    HCTR_LOG(INFO, ROOT, "Cache hit rate!!!: %f\n", workspace_handler.h_hit_rate_[table_id]);
     start = profiler::start(workspace_handler.h_hit_rate_[table_id], ProfilerType_t::Occupancy);
     ec_profiler_->end(start, "The hit rate of Embedding Cache", ProfilerType_t::Occupancy);
 
