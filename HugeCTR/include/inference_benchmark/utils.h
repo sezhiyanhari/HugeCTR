@@ -52,7 +52,7 @@ struct metrics_argues {
 };
 
 struct Profiler_Config {
-  Profiler_Config() : enable_bench_(true) {}
+  Profiler_Config() : enable_bench_(false) {}
   int iterations;
   int warmup;
   bool enable_bench_;

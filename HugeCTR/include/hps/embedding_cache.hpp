@@ -45,7 +45,8 @@ class EmbeddingCache : public EmbeddingCacheBase,
   virtual void lookup_from_device(size_t table_id, float* d_vectors, const void* d_keys,
                                   size_t num_keys, float hit_rate_threshold, cudaStream_t stream);
   virtual void lookup_from_device(size_t table_id, float* d_vectors, MemoryBlock* memory_block,
-                                  size_t num_keys, float hit_rate_threshold, cudaStream_t stream);
+                                  MemoryBlock* memory_block_full_cache, size_t num_keys,
+                                  float hit_rate_threshold, cudaStream_t stream);
   virtual void insert(size_t table_id, EmbeddingCacheWorkspace& workspace_handler,
                       cudaStream_t stream);
 
