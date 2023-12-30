@@ -75,6 +75,8 @@ class StaticTable : public EmbeddingCacheBase,
   virtual const std::vector<cudaStream_t>& get_insert_streams() { return refresh_streams_; }
   virtual void insert(size_t table_id, EmbeddingCacheWorkspace& workspace_handler,
                       cudaStream_t stream) override{};
+  virtual void insert(size_t table_id, EmbeddingCacheWorkspace& workspace_handler,
+                      cudaStream_t stream, bool full_cache_insertion) override{};
   virtual void finalize() override{};
   virtual void lookup_from_device(size_t table_id, float* d_vectors, MemoryBlock* memory_block,
                                   size_t num_keys, cudaStream_t stream);

@@ -532,6 +532,14 @@ void EmbeddingCacheStoch<TypeHashKey>::init(const size_t table_id,
   }
 }
 
+// insert full_cache => do nothing
+template <typename TypeHashKey>
+void EmbeddingCacheStoch<TypeHashKey>::insert(size_t table_id,
+                                              EmbeddingCacheWorkspace& workspace_handler,
+                                              cudaStream_t stream, bool full_cache_insertion) {
+  return;
+}
+
 template <typename TypeHashKey>
 void EmbeddingCacheStoch<TypeHashKey>::dump(const size_t table_id, void* const d_keys,
                                             size_t* const d_length, const size_t start_index,

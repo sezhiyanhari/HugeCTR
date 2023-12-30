@@ -33,7 +33,7 @@ template <typename TypeHashKey>
 static void parameter_server_insert_thread_func_(
     const size_t table_id, HierParameterServerBase* const parameter_server,
     std::shared_ptr<EmbeddingCacheBase> embedding_cache, MemoryBlock* const memory_block,
-    cudaStream_t stream, std::mutex& stream_mutex) {
+    cudaStream_t stream, std::mutex& stream_mutex, bool full_cache_insertion) {
   try {
     // TODO: Why do we lock the mutex so early?
     std::lock_guard<std::mutex> lock(stream_mutex);
@@ -44,7 +44,7 @@ static void parameter_server_insert_thread_func_(
     cudaEventCreate(&insert_event);
     // Insert data.
     parameter_server->insert_embedding_cache(table_id, embedding_cache, memory_block->worker_buffer,
-                                             stream);
+                                             stream, full_cache_insertion);
     cudaEventRecord(insert_event, stream);
     // Await sync events.
     cudaEventSynchronize(insert_event);
@@ -191,7 +191,9 @@ EmbeddingCache<TypeHashKey>::EmbeddingCache(const InferenceParams& inference_par
       size_t num_feature_in_cache = static_cast<size_t>(
           static_cast<double>(cache_config_.cache_size_percentage_) * static_cast<double>(row_num));
       // Hari: changes
-      size_t num_feature_in_full_cache = static_cast<size_t>(static_cast<double>(row_num));
+      size_t num_feature_in_full_cache =
+          static_cast<size_t>(static_cast<double>(1.0) * static_cast<double>(row_num));
+
       HCTR_LOG(
           INFO, ROOT,
           "Embedding table idx %zu, row_num %zu, num_feature_in_cache %zu, num_emb_table: %zu \n",
@@ -321,7 +323,7 @@ void EmbeddingCache<TypeHashKey>::lookup(size_t const table_id, float* const d_v
     // Hari: call into lookup_from_device
     lookup_from_device(table_id, d_vectors, memory_block, memory_block_full_cache, num_keys,
                        hit_rate_threshold, stream);
-    parameter_server_->free_buffer(memory_block_full_cache);
+    // parameter_server_->free_buffer(memory_block_full_cache);
     ec_profiler_->end(start, "Lookup the embedding keys from Embedding Cache");
     ec_profiler_->print();
   }
@@ -485,9 +487,12 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
     // Hari: missing keys handled here
     // Handle the missing keys mode 1: synchronous
     if (!async_insert_flag) {
+      HCTR_LOG(INFO, ROOT, "DEBUG: SYNCHRONOUS INSERTION\n");
       start = profiler::start();
       parameter_server_->insert_embedding_cache(table_id, this->shared_from_this(),
-                                                workspace_handler, stream);
+                                                workspace_handler, stream, false);
+      parameter_server_->insert_embedding_cache(table_id, this->shared_from_this(),
+                                                workspace_handler_full_cache, stream, true);
       // Wait for memory copy to complete
       HCTR_LIB_THROW(cudaStreamSynchronize(stream));
       ec_profiler_->end(start, "Missing key synchronization insert into Embedding Cache");
@@ -497,11 +502,18 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
                           workspace_handler.d_missing_index_[table_id],
                           workspace_handler.h_missing_length_[table_id],
                           cache_config_.embedding_vec_size_[table_id], BLOCK_SIZE_, stream);
+      merge_emb_vec_async(workspace_handler_full_cache.d_hit_emb_vec_[table_id],
+                          workspace_handler_full_cache.d_missing_emb_vec_[table_id],
+                          workspace_handler_full_cache.d_missing_index_[table_id],
+                          workspace_handler_full_cache.h_missing_length_[table_id],
+                          cache_config_.embedding_vec_size_[table_id], BLOCK_SIZE_, stream);
       ec_profiler_->end(start, "Merge output from Embedding Cache", ProfilerType_t::Timeliness,
                         stream);
     }
     // mode 2: Asynchronous
     else {
+      // Hari insight: should follow this code loop for fair testing
+      HCTR_LOG(INFO, ROOT, "DEBUG: ASYNCHRONOUS INSERTION\n");
       start = profiler::start();
       fill_default_emb_vec_async(workspace_handler.d_hit_emb_vec_[table_id],
                                  cache_config_.default_value_for_each_table[table_id],
@@ -517,8 +529,13 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
                              workspace_handler.d_unique_output_index_[table_id], d_vectors,
                              num_keys, cache_config_.embedding_vec_size_[table_id], BLOCK_SIZE_,
                              stream);
+    decompress_emb_vec_async(workspace_handler_full_cache.d_hit_emb_vec_[table_id],
+                             workspace_handler_full_cache.d_unique_output_index_[table_id],
+                             d_vectors, num_keys, cache_config_.embedding_vec_size_[table_id],
+                             BLOCK_SIZE_, stream);
     // Clear the unique op object to be ready for next lookup
     static_cast<UniqueOp*>(workspace_handler.unique_op_obj_[table_id])->clear(stream);
+    static_cast<UniqueOp*>(workspace_handler_full_cache.unique_op_obj_[table_id])->clear(stream);
     HCTR_LIB_THROW(cudaStreamSynchronize(stream));
     ec_profiler_->end(start, "decompress/deunique output from Embedding Cache");
 
@@ -528,10 +545,17 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
       insert_workers_.submit([this, self(this->shared_from_this()), table_id, memory_block]() {
         parameter_server_insert_thread_func_<TypeHashKey>(table_id, parameter_server_, self,
                                                           memory_block, insert_streams_[table_id],
-                                                          stream_mutex_);
+                                                          stream_mutex_, false);
       });
+      // insert_workers_.submit(
+      //     [this, self(this->shared_from_this()), table_id, memory_block_full_cache]() {
+      //       parameter_server_insert_thread_func_<TypeHashKey>(
+      //           table_id, parameter_server_, self, memory_block_full_cache,
+      //           insert_streams_[table_id], stream_mutex_, true);
+      //     });
     } else {
       parameter_server_->free_buffer(memory_block);
+      parameter_server_->free_buffer(memory_block_full_cache);
     }
   } else {
     HCTR_LOG_S(ERROR, WORLD)
@@ -544,6 +568,7 @@ template <typename TypeHashKey>
 void EmbeddingCache<TypeHashKey>::insert(const size_t table_id,
                                          EmbeddingCacheWorkspace& workspace_handler,
                                          cudaStream_t stream) {
+  HCTR_LOG(INFO, ROOT, "DEBUG: INSERT NOT FULL_CACHE FUNCTION CALLED\n");
   // If GPU embedding cache is enabled
   if (cache_config_.use_gpu_embedding_cache_) {
     CudaDeviceContext dev_restorer;
@@ -552,6 +577,29 @@ void EmbeddingCache<TypeHashKey>::insert(const size_t table_id,
         static_cast<TypeHashKey*>(workspace_handler.d_missing_embeddingcolumns_[table_id]),
         workspace_handler.h_missing_length_[table_id],
         workspace_handler.d_missing_emb_vec_[table_id], stream);
+  }
+}
+
+template <typename TypeHashKey>
+void EmbeddingCache<TypeHashKey>::insert(const size_t table_id,
+                                         EmbeddingCacheWorkspace& workspace_handler,
+                                         cudaStream_t stream, bool full_cache_insertion) {
+  HCTR_LOG(INFO, ROOT, "DEBUG: INSERT FULL_CACHE FUNCTION CALLED\n");
+  // If GPU embedding cache is enabled
+  if (cache_config_.use_gpu_embedding_cache_) {
+    CudaDeviceContext dev_restorer;
+    dev_restorer.check_device(cache_config_.cuda_dev_id_);
+    if (full_cache_insertion) {
+      gpu_emb_full_caches_[table_id]->Replace(
+          static_cast<TypeHashKey*>(workspace_handler.d_missing_embeddingcolumns_[table_id]),
+          workspace_handler.h_missing_length_[table_id],
+          workspace_handler.d_missing_emb_vec_[table_id], stream);
+    } else {
+      gpu_emb_caches_[table_id]->Replace(
+          static_cast<TypeHashKey*>(workspace_handler.d_missing_embeddingcolumns_[table_id]),
+          workspace_handler.h_missing_length_[table_id],
+          workspace_handler.d_missing_emb_vec_[table_id], stream);
+    }
   }
 }
 

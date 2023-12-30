@@ -976,6 +976,40 @@ void HierParameterServer<TypeHashKey>::insert_embedding_cache(
   embedding_cache->insert(table_id, workspace_handler, stream);
 }
 
+template <typename TypeHashKey>
+void HierParameterServer<TypeHashKey>::insert_embedding_cache(
+    const size_t table_id, std::shared_ptr<EmbeddingCacheBase> embedding_cache,
+    EmbeddingCacheWorkspace& workspace_handler, cudaStream_t stream, bool full_cache_insertion) {
+  auto cache_config = embedding_cache->get_cache_config();
+#ifdef ENABLE_INFERENCE
+  HCTR_LOG(TRACE, WORLD, "*****Insert embedding cache of model %s on device %d*****\n",
+           cache_config.model_name_.c_str(), cache_config.cuda_dev_id_);
+#endif
+  // Copy the missing embeddingcolumns to host
+  HCTR_LIB_THROW(cudaStreamSynchronize(stream));
+  HCTR_LIB_THROW(
+      cudaMemcpyAsync(workspace_handler.h_missing_embeddingcolumns_[table_id],
+                      workspace_handler.d_missing_embeddingcolumns_[table_id],
+                      workspace_handler.h_missing_length_[table_id] * sizeof(TypeHashKey),
+                      cudaMemcpyDeviceToHost, stream));
+
+  // Query the missing embeddingcolumns from Parameter Server
+  HCTR_LIB_THROW(cudaStreamSynchronize(stream));
+  this->lookup(workspace_handler.h_missing_embeddingcolumns_[table_id],
+               workspace_handler.h_missing_length_[table_id],
+               workspace_handler.h_missing_emb_vec_[table_id], cache_config.model_name_, table_id);
+
+  // Copy missing emb_vec to device
+
+  const size_t missing_len_in_byte = workspace_handler.h_missing_length_[table_id] *
+                                     cache_config.embedding_vec_size_[table_id] * sizeof(float);
+  HCTR_LIB_THROW(cudaMemcpyAsync(workspace_handler.d_missing_emb_vec_[table_id],
+                                 workspace_handler.h_missing_emb_vec_[table_id],
+                                 missing_len_in_byte, cudaMemcpyHostToDevice, stream));
+  // Insert the vectors for missing keys into embedding cache
+  embedding_cache->insert(table_id, workspace_handler, stream, full_cache_insertion);
+}
+
 template class HierParameterServer<long long>;
 template class HierParameterServer<unsigned int>;
 

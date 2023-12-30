@@ -66,6 +66,10 @@ class HierParameterServerBase {
                                       std::shared_ptr<EmbeddingCacheBase> embedding_cache,
                                       EmbeddingCacheWorkspace& workspace_handler,
                                       cudaStream_t stream) = 0;
+  virtual void insert_embedding_cache(size_t table_id,
+                                      std::shared_ptr<EmbeddingCacheBase> embedding_cache,
+                                      EmbeddingCacheWorkspace& workspace_handler,
+                                      cudaStream_t stream, bool full_cache_insertion) = 0;
   virtual void parse_hps_configuraion(const std::string& hps_json_config_file) = 0;
   virtual std::map<std::string, InferenceParams> get_hps_model_configuration_map() = 0;
   virtual void set_profiler(int iteration, int warmup, bool enable_bench) = 0;

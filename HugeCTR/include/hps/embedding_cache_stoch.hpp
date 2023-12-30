@@ -50,6 +50,8 @@ class EmbeddingCacheStoch : public EmbeddingCacheBase,
                                   size_t num_keys, float hit_rate_threshold, cudaStream_t stream);
   virtual void insert(size_t table_id, EmbeddingCacheWorkspace& workspace_handler,
                       cudaStream_t stream);
+  virtual void insert(size_t table_id, EmbeddingCacheWorkspace& workspace_handler,
+                      cudaStream_t stream, bool full_cache_insertion);
 
   virtual void init(const size_t table_id, EmbeddingCacheRefreshspace& refreshspace_handler,
                     cudaStream_t stream);
