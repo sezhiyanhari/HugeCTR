@@ -40,9 +40,14 @@ class EmbeddingCache : public EmbeddingCacheBase,
   EmbeddingCache(EmbeddingCache const&) = delete;
   EmbeddingCache& operator=(EmbeddingCache const&) = delete;
 
-  virtual void lookup(size_t table_id, float* d_vectors, const void* h_keys, size_t num_keys,
-                      float hit_rate_threshold, cudaStream_t stream);
+  virtual void lookup(size_t const table_id, float* const d_vectors, const void* const h_keys,
+                      size_t const num_keys, float const hit_rate_threshold, cudaStream_t stream);
+  virtual void lookup(size_t const table_id, float* const d_vectors, const void* const h_keys,
+                      const void* const h_keys_full_cache, size_t const num_keys,
+                      float const hit_rate_threshold, cudaStream_t stream);
   virtual void lookup_from_device(size_t table_id, float* d_vectors, const void* d_keys,
+                                  size_t num_keys, float hit_rate_threshold, cudaStream_t stream);
+  virtual void lookup_from_device(size_t table_id, float* d_vectors, MemoryBlock* memory_block,
                                   size_t num_keys, float hit_rate_threshold, cudaStream_t stream);
   virtual void lookup_from_device(size_t table_id, float* d_vectors, MemoryBlock* memory_block,
                                   MemoryBlock* memory_block_full_cache, size_t num_keys,

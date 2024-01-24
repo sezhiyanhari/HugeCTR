@@ -263,7 +263,7 @@ void LookupSession::lookup_impl_with_full_cache(const void* const h_keys,
   HCTR_LOG(INFO, ROOT, "lookup_impl called from lookup_session.cpp\n");
   CudaDeviceContext dev_restorer;
   dev_restorer.set_device(inference_params_.device_id);
-  embedding_cache_->lookup(table_id, d_vectors, h_keys, num_keys,
+  embedding_cache_->lookup(table_id, d_vectors, h_keys, h_keys_full_cache, num_keys,
                            inference_params_.hit_rate_threshold, stream);
 }
 

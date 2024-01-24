@@ -282,14 +282,61 @@ EmbeddingCache<TypeHashKey>::~EmbeddingCache() {
   }
 }
 
-// Hari: at this point, it looks like the system knows which keys are not in the device
-// and need to retrieved from the host
 template <typename TypeHashKey>
 void EmbeddingCache<TypeHashKey>::lookup(size_t const table_id, float* const d_vectors,
                                          const void* const h_keys, size_t const num_keys,
                                          float const hit_rate_threshold, cudaStream_t stream) {
   // Hari: changes
-  HCTR_LOG(INFO, ROOT, "DEBUG: Lookup function called...\n");
+  HCTR_LOG(INFO, ROOT, "DEBUG!!!! lookup called WITHOUT h_keys_full_cache\n");
+  MemoryBlock* memory_block = nullptr;
+  BaseUnit* start = profiler::start();
+  while (memory_block == nullptr) {
+    memory_block = reinterpret_cast<struct MemoryBlock*>(parameter_server_->apply_buffer(
+        cache_config_.model_name_, cache_config_.cuda_dev_id_, CACHE_SPACE_TYPE::WORKER));
+  }
+  ec_profiler_->end(start, "Apply for workspace from the memory pool for Embedding Cache Lookup");
+  EmbeddingCacheWorkspace workspace_handler = memory_block->worker_buffer;
+  if (cache_config_.use_gpu_embedding_cache_) {
+    CudaDeviceContext dev_restorer;
+    dev_restorer.check_device(cache_config_.cuda_dev_id_);
+
+    // Copy the keys to device
+    start = profiler::start();
+    HCTR_LIB_THROW(cudaMemcpyAsync(workspace_handler.d_embeddingcolumns_[table_id], h_keys,
+                                   num_keys * sizeof(TypeHashKey), cudaMemcpyHostToDevice, stream));
+    ec_profiler_->end(start, "Copy the input to workspace of Embedding Cache",
+                      ProfilerType_t::Timeliness, stream);
+    start = profiler::start();
+    lookup_from_device(table_id, d_vectors, memory_block, num_keys, hit_rate_threshold, stream);
+    ec_profiler_->end(start, "Lookup the embedding keys from Embedding Cache");
+  }
+  // Not using GPU embedding cache
+  else {
+    memcpy(workspace_handler.h_embeddingcolumns_[table_id], h_keys, num_keys * sizeof(TypeHashKey));
+    start = profiler::start();
+    parameter_server_->lookup(workspace_handler.h_embeddingcolumns_[table_id], num_keys,
+                              workspace_handler.h_missing_emb_vec_[table_id],
+                              cache_config_.model_name_, table_id);
+    ec_profiler_->end(
+        start, "Lookup the embedding keys from Database backend(disable the Embedding Cache)");
+    HCTR_LIB_THROW(
+        cudaMemcpyAsync(d_vectors, workspace_handler.h_missing_emb_vec_[table_id],
+                        num_keys * cache_config_.embedding_vec_size_[table_id] * sizeof(float),
+                        cudaMemcpyHostToDevice, stream));
+    HCTR_LIB_THROW(cudaStreamSynchronize(stream));
+    parameter_server_->free_buffer(memory_block);
+  }
+}
+
+// Hari: at this point, it looks like the system knows which keys are not in the device
+// and need to retrieved from the host
+template <typename TypeHashKey>
+void EmbeddingCache<TypeHashKey>::lookup(size_t const table_id, float* const d_vectors,
+                                         const void* const h_keys,
+                                         const void* const h_keys_full_cache, size_t const num_keys,
+                                         float const hit_rate_threshold, cudaStream_t stream) {
+  // Hari: changes
+  HCTR_LOG(INFO, ROOT, "DEBUG!!!! lookup called WITH h_keys_full_cache\n");
   MemoryBlock* memory_block = nullptr;
   MemoryBlock* memory_block_full_cache = nullptr;
   BaseUnit* start = profiler::start();
@@ -395,11 +442,124 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
 template <typename TypeHashKey>
 void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, float* const d_vectors,
                                                      MemoryBlock* memory_block,
+                                                     size_t const num_keys,
+                                                     float const hit_rate_threshold,
+                                                     cudaStream_t stream) {
+  EmbeddingCacheWorkspace workspace_handler = memory_block->worker_buffer;
+  if (cache_config_.use_gpu_embedding_cache_) {
+    CudaDeviceContext dev_restorer;
+    dev_restorer.check_device(cache_config_.cuda_dev_id_);
+    BaseUnit* start = profiler::start();
+    // Unique
+    static_cast<UniqueOp*>(workspace_handler.unique_op_obj_[table_id])
+        ->unique(static_cast<TypeHashKey*>(workspace_handler.d_embeddingcolumns_[table_id]),
+                 num_keys, workspace_handler.d_unique_output_index_[table_id],
+                 static_cast<TypeHashKey*>(
+                     workspace_handler.d_unique_output_embeddingcolumns_[table_id]),
+                 workspace_handler.d_unique_length_ + table_id, stream);
+    HCTR_LIB_THROW(cudaMemcpyAsync(workspace_handler.h_unique_length_ + table_id,
+                                   workspace_handler.d_unique_length_ + table_id, sizeof(size_t),
+                                   cudaMemcpyDeviceToHost, stream));
+    HCTR_LIB_THROW(cudaStreamSynchronize(stream));
+    ec_profiler_->end(start, "Deduplicate the input embedding key for Embedding Cache");
+
+    // Query
+    const size_t query_length = workspace_handler.h_unique_length_[table_id];
+    const size_t task_per_warp_tile = (query_length < 1000000) ? 1 : 32;
+    start = profiler::start();
+    gpu_emb_caches_[table_id]->Query(
+        static_cast<TypeHashKey*>(workspace_handler.d_unique_output_embeddingcolumns_[table_id]),
+        workspace_handler.h_unique_length_[table_id], workspace_handler.d_hit_emb_vec_[table_id],
+        workspace_handler.d_missing_index_[table_id],
+        static_cast<TypeHashKey*>(workspace_handler.d_missing_embeddingcolumns_[table_id]),
+        workspace_handler.d_missing_length_ + table_id, stream, task_per_warp_tile);
+    HCTR_LIB_THROW(cudaMemcpyAsync(workspace_handler.h_missing_length_ + table_id,
+                                   workspace_handler.d_missing_length_ + table_id, sizeof(size_t),
+                                   cudaMemcpyDeviceToHost, stream));
+    // Set async flag
+    HCTR_LIB_THROW(cudaStreamSynchronize(stream));
+    ec_profiler_->end(start, "Native Embedding Cache Query API");
+    if (workspace_handler.h_unique_length_[table_id] == 0) {
+      workspace_handler.h_hit_rate_[table_id] = 1.0;
+    } else {
+      workspace_handler.h_hit_rate_[table_id] =
+          1.0 - (static_cast<double>(workspace_handler.h_missing_length_[table_id]) /
+                 static_cast<double>(workspace_handler.h_unique_length_[table_id]));
+    }
+
+    HCTR_LOG(INFO, ROOT, "DEBUG: d_missing_length_: %f\n",
+             static_cast<double>(workspace_handler.h_missing_length_[table_id]));
+
+    bool async_insert_flag{workspace_handler.h_hit_rate_[table_id] >= hit_rate_threshold};
+    start = profiler::start(workspace_handler.h_hit_rate_[table_id], ProfilerType_t::Occupancy);
+    ec_profiler_->end(start, "The hit rate of Embedding Cache", ProfilerType_t::Occupancy);
+
+    // Handle the missing keys mode 1: synchronous
+    if (!async_insert_flag) {
+      start = profiler::start();
+      parameter_server_->insert_embedding_cache(table_id, this->shared_from_this(),
+                                                workspace_handler, stream, false);
+      // Wait for memory copy to complete
+      HCTR_LIB_THROW(cudaStreamSynchronize(stream));
+      ec_profiler_->end(start, "Missing key synchronization insert into Embedding Cache");
+      start = profiler::start();
+      merge_emb_vec_async(workspace_handler.d_hit_emb_vec_[table_id],
+                          workspace_handler.d_missing_emb_vec_[table_id],
+                          workspace_handler.d_missing_index_[table_id],
+                          workspace_handler.h_missing_length_[table_id],
+                          cache_config_.embedding_vec_size_[table_id], BLOCK_SIZE_, stream);
+      ec_profiler_->end(start, "Merge output from Embedding Cache", ProfilerType_t::Timeliness,
+                        stream);
+    }
+    // mode 2: Asynchronous
+    else {
+      start = profiler::start();
+      fill_default_emb_vec_async(workspace_handler.d_hit_emb_vec_[table_id],
+                                 cache_config_.default_value_for_each_table[table_id],
+                                 workspace_handler.d_missing_index_[table_id],
+                                 workspace_handler.h_missing_length_[table_id],
+                                 cache_config_.embedding_vec_size_[table_id], BLOCK_SIZE_, stream);
+      ec_profiler_->end(start, "Fill default embedding vector asynchronously",
+                        ProfilerType_t::Timeliness, stream);
+    }
+    start = profiler::start();
+    // Decompress the hit emb_vec buffer to output buffer
+    decompress_emb_vec_async(workspace_handler.d_hit_emb_vec_[table_id],
+                             workspace_handler.d_unique_output_index_[table_id], d_vectors,
+                             num_keys, cache_config_.embedding_vec_size_[table_id], BLOCK_SIZE_,
+                             stream);
+    // Clear the unique op object to be ready for next lookup
+    static_cast<UniqueOp*>(workspace_handler.unique_op_obj_[table_id])->clear(stream);
+    HCTR_LIB_THROW(cudaStreamSynchronize(stream));
+    ec_profiler_->end(start, "decompress/deunique output from Embedding Cache");
+
+    // Handle the missing keys, mode 2: synchronous
+    if (async_insert_flag) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      insert_workers_.submit([this, self(this->shared_from_this()), table_id, memory_block]() {
+        parameter_server_insert_thread_func_<TypeHashKey>(table_id, parameter_server_, self,
+                                                          memory_block, insert_streams_[table_id],
+                                                          stream_mutex_, false);
+      });
+    } else {
+      parameter_server_->free_buffer(memory_block);
+    }
+  } else {
+    HCTR_LOG_S(ERROR, WORLD)
+        << "Cannot call internal lookup_from_device when disabling GPU embedding cache"
+        << std::endl;
+  }
+}
+
+template <typename TypeHashKey>
+void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, float* const d_vectors,
+                                                     MemoryBlock* memory_block,
                                                      MemoryBlock* memory_block_full_cache,
                                                      size_t const num_keys,
                                                      float const hit_rate_threshold,
                                                      cudaStream_t stream) {
-  HCTR_LOG(INFO, ROOT, "lookup_from_device embedding_cache.cpp\n");
+  HCTR_LOG(INFO, ROOT,
+           "DEBUG!!!! lookup_from_device embedding_cache.cpp WITH memory_block_full_cache\n");
   EmbeddingCacheWorkspace workspace_handler = memory_block->worker_buffer;
   EmbeddingCacheWorkspace workspace_handler_full_cache = memory_block_full_cache->worker_buffer;
   if (cache_config_.use_gpu_embedding_cache_) {

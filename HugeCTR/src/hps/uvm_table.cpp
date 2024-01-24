@@ -127,6 +127,13 @@ void UvmTable<TypeHashKey>::lookup(size_t table_id, float *d_vectors, const void
 }
 
 template <typename TypeHashKey>
+void UvmTable<TypeHashKey>::lookup(size_t table_id, float *d_vectors, const void *h_keys,
+                                   const void *h_keys_full_cache, size_t num_keys,
+                                   float hit_rate_threshold, cudaStream_t stream) {
+  return;
+}
+
+template <typename TypeHashKey>
 void UvmTable<TypeHashKey>::lookup_from_device(size_t table_id, float *d_vectors,
                                                const void *d_keys, size_t num_keys,
                                                float hit_rate_threshold, cudaStream_t stream) {

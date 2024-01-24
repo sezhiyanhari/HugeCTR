@@ -318,6 +318,15 @@ void EmbeddingCacheStoch<TypeHashKey>::lookup(size_t const table_id, float* cons
 }
 
 template <typename TypeHashKey>
+void EmbeddingCacheStoch<TypeHashKey>::lookup(size_t const table_id, float* const d_vectors,
+                                              const void* const h_keys,
+                                              const void* const h_keys_full_cache,
+                                              size_t const num_keys, float const hit_rate_threshold,
+                                              cudaStream_t stream) {
+  return;
+}
+
+template <typename TypeHashKey>
 void EmbeddingCacheStoch<TypeHashKey>::lookup_from_device(
     size_t const table_id, float* const d_vectors, const void* const d_keys, size_t const num_keys,
     float const hit_rate_threshold, cudaStream_t stream) {
