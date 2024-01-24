@@ -539,6 +539,7 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
     HCTR_LIB_THROW(cudaStreamSynchronize(stream));
     ec_profiler_->end(start, "decompress/deunique output from Embedding Cache");
 
+    // Hari: no need to add logic here as it only applies to async insertion setting
     // Handle the missing keys, mode 2: synchronous
     if (async_insert_flag) {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -611,6 +612,8 @@ void EmbeddingCache<TypeHashKey>::init(const size_t table_id,
   if (cache_config_.use_gpu_embedding_cache_) {
     CudaDeviceContext dev_restorer;
     dev_restorer.check_device(cache_config_.cuda_dev_id_);
+    // Hari TODO: shouldn't gpu_emb_full_caches_ also have a Replace call here?
+    // Understand what this Replace call does
     gpu_emb_caches_[table_id]->Replace(
         static_cast<TypeHashKey*>(refreshspace_handler.d_refresh_embeddingcolumns_),
         *refreshspace_handler.h_length_, refreshspace_handler.d_refresh_emb_vec_, stream);

@@ -48,6 +48,10 @@ class HPS {
 
   pybind11::array_t<float> lookup(pybind11::array_t<size_t>& h_keys, const std::string& model_name,
                                   size_t table_id, int64_t device_id);
+  pybind11::array_t<float> lookup_with_full_cache(pybind11::array_t<size_t>& h_keys,
+                                                  pybind11::array_t<size_t>& h_keys_full_cache,
+                                                  const std::string& model_name, size_t table_id,
+                                                  int64_t device_id);
   void lookup_fromdlpack(pybind11::capsule& keys, pybind11::capsule& out_tensor,
                          const std::string& model_name, size_t table_id, int64_t device_id);
 
@@ -100,11 +104,15 @@ HPS::HPS(parameter_server_config& ps_config) : ps_config_(ps_config) { initializ
 void HPS::initialize() {
   // Hari changes
   HCTR_LOG(INFO, ROOT, "HPS initialize called\n");
+  // Hari: looks like parameter_server_ is created here, so this create logic
+  // should create the embedding_cache object too.
   parameter_server_ = HierParameterServerBase::create(ps_config_);
   for (auto& inference_params : ps_config_.inference_params_array) {
     std::map<int64_t, std::shared_ptr<LookupSessionBase>> lookup_sessions;
     for (const auto& device_id : inference_params.deployed_devices) {
       inference_params.device_id = device_id;
+      // Hari TODO: determine if the cache is initialized here
+      // Hari TODO complete: cache is initialized but no embeddings yet inserted into cache
       auto embedding_cache =
           parameter_server_->get_embedding_cache(inference_params.model_name, device_id);
       auto lookup_session = LookupSessionBase::create(inference_params, embedding_cache);
@@ -241,6 +249,7 @@ pybind11::array_t<float> HPS::lookup(pybind11::array_t<size_t>& h_keys,
   pybind11::buffer_info key_buf = h_keys.request();
   size_t num_keys = key_buf.size;
   HCTR_CHECK_HINT(key_buf.ndim == 1, "Number of dimensions of h_keys must be one.");
+  HCTR_LOG(INFO, ROOT, "HPS tensor shape of first dimension: %zu\n", key_buf.shape[0]);
   HCTR_CHECK_HINT(
       num_keys <= max_keys_per_sample_per_table[table_id] * inference_params.max_batchsize,
       "The number of keys to be queried should be no large than "
@@ -279,7 +288,67 @@ pybind11::array_t<float> HPS::lookup(pybind11::array_t<size_t>& h_keys,
                             cudaMemcpyDeviceToHost));
   return h_vectors;
 }
+pybind11::array_t<float> HPS::lookup_with_full_cache(pybind11::array_t<size_t>& h_keys,
+                                                     pybind11::array_t<size_t>& h_keys_full_cache,
+                                                     const std::string& model_name, size_t table_id,
+                                                     int64_t device_id) {
+  // Hari: this is the entrypoint into the C++ backend from the Python hps.lookup() call
+  HCTR_LOG(INFO, ROOT, "HPS lookup called, table_id: %zu, device_id: %ld\n", table_id, device_id);
+  if (lookup_session_map_.find(model_name) == lookup_session_map_.end()) {
+    HCTR_OWN_THROW(Error_t::WrongInput, "The model name does not exist in HPS.");
+  }
+  const auto& max_keys_per_sample_per_table =
+      ps_config_.max_feature_num_per_sample_per_emb_table_.at(model_name);
+  const auto& embedding_size_per_table = ps_config_.embedding_vec_size_.at(model_name);
+  const auto& inference_params =
+      parameter_server_->get_hps_model_configuration_map().at(model_name);
+  pybind11::buffer_info key_buf = h_keys.request();
+  pybind11::buffer_info key_buf_full_cache = h_keys_full_cache.request();
+  size_t num_keys = key_buf.size;
+  HCTR_CHECK_HINT(key_buf.ndim == 1, "Number of dimensions of h_keys must be one.");
+  HCTR_LOG(INFO, ROOT, "HPS tensor shape of first dimension: %zu\n", key_buf.shape[0]);
+  HCTR_CHECK_HINT(
+      num_keys <= max_keys_per_sample_per_table[table_id] * inference_params.max_batchsize,
+      "The number of keys to be queried should be no large than "
+      "max_keys_per_sample_per_table[table_id] * inference_params.max_batchsize.");
 
+  // Handle both keys of both long long and unsigned int
+  void *key_ptr, *key_ptr_full_cache;
+  if (inference_params.i64_input_key) {
+    // Hari: code enters this conditional
+    HCTR_LOG(INFO, ROOT, "DEBUG: i64_input_key\n");
+    key_ptr = static_cast<void*>(key_buf.ptr);
+    key_ptr_full_cache = static_cast<void*>(key_buf_full_cache.ptr);
+  } else {
+    unsigned int* h_keys = h_keys_per_table_map_.find(model_name)->second[table_id];
+    auto transform = [](unsigned int* out, long long* in, size_t count) {
+      for (size_t i{0}; i < count; ++i) {
+        out[i] = static_cast<unsigned int>(in[i]);
+      }
+    };
+    transform(h_keys, static_cast<long long*>(key_buf.ptr), num_keys);
+    key_ptr = static_cast<void*>(h_keys);
+  }
+
+  // TODO: batching or scheduling for lookup sessions on multiple GPUs
+  const auto& lookup_session = lookup_session_map_.find(model_name)->second.find(device_id)->second;
+  auto& d_vectors_per_table =
+      d_vectors_per_table_map_.find(model_name)->second.find(device_id)->second;
+  // Hari: lookup call (1)
+  // lookup_session->lookup(key_ptr, d_vectors_per_table[table_id], num_keys, table_id);
+  lookup_session->lookup_with_full_cache(key_ptr, key_ptr_full_cache, d_vectors_per_table[table_id],
+                                         num_keys, table_id);
+  std::vector<size_t> vector_shape{static_cast<size_t>(key_buf.shape[0]),
+                                   embedding_size_per_table[table_id]};
+  pybind11::array_t<float> h_vectors(vector_shape);
+  pybind11::buffer_info vector_buf = h_vectors.request();
+  float* vec_ptr = static_cast<float*>(vector_buf.ptr);
+  // Hari: synchronous cudaMemcpy call here
+  HCTR_LIB_THROW(cudaMemcpy(vec_ptr, d_vectors_per_table[table_id],
+                            num_keys * embedding_size_per_table[table_id] * sizeof(float),
+                            cudaMemcpyDeviceToHost));
+  return h_vectors;
+}
 void HPSPybind(pybind11::module& m) {
   pybind11::module infer = m.def_submodule("inference", "inference submodule of hugectr");
 
@@ -432,6 +501,9 @@ void HPSPybind(pybind11::module& m) {
       .def(pybind11::init<const std::string&>(), pybind11::arg("hps_json_config_file"))
       .def("lookup", &HugeCTR::python_lib::HPS::lookup, pybind11::arg("h_keys"),
            pybind11::arg("model_name"), pybind11::arg("table_id"), pybind11::arg("device_id") = 0)
+      .def("lookup_with_full_cache", &HugeCTR::python_lib::HPS::lookup_with_full_cache,
+           pybind11::arg("h_keys"), pybind11::arg("h_keys_full_cache"), pybind11::arg("model_name"),
+           pybind11::arg("table_id"), pybind11::arg("device_id") = 0)
       .def("lookup_fromdlpack", &HugeCTR::python_lib::HPS::lookup_fromdlpack, pybind11::arg("keys"),
            pybind11::arg("out_tensor"), pybind11::arg("model_name"), pybind11::arg("table_id"),
            pybind11::arg("device_id") = 0);

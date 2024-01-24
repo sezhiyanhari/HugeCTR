@@ -30,6 +30,11 @@ class LookupSession : public LookupSessionBase {
                                        size_t table_id, cudaStream_t stream) override final;
   virtual void lookup_impl(const void* const h_keys, float* const d_vectors, const size_t num_keys,
                            const size_t table_id, cudaStream_t stream) override final;
+  virtual void lookup_impl_with_full_cache(const void* const h_keys,
+                                           const void* const h_keys_full_cache,
+                                           float* const d_vectors, const size_t num_keys,
+                                           const size_t table_id,
+                                           cudaStream_t stream) override final;
 
  public:
   virtual ~LookupSession();
@@ -40,6 +45,9 @@ class LookupSession : public LookupSessionBase {
 
   virtual void lookup(const void* h_keys, float* d_vectors, size_t num_keys,
                       size_t table_id) override final;
+  virtual void lookup_with_full_cache(const void* h_keys, const void* h_keys_full_cache,
+                                      float* d_vectors, size_t num_keys,
+                                      size_t table_id) override final;
   virtual void lookup(const void* const h_keys, float* const d_vectors, const size_t num_keys,
                       const size_t table_id, cudaStream_t stream) override final;
   virtual void lookup(const std::vector<const void*>& h_keys_per_table,

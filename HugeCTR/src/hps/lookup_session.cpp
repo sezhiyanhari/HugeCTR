@@ -254,6 +254,19 @@ void LookupSession::lookup_impl(const void* const h_keys, float* const d_vectors
                            inference_params_.hit_rate_threshold, stream);
 }
 
+void LookupSession::lookup_impl_with_full_cache(const void* const h_keys,
+                                                const void* const h_keys_full_cache,
+                                                float* const d_vectors, const size_t num_keys,
+                                                const size_t table_id, cudaStream_t stream) {
+  // Hari: lookup session calls embedding cache here
+  // Hari: lookup call (2)
+  HCTR_LOG(INFO, ROOT, "lookup_impl called from lookup_session.cpp\n");
+  CudaDeviceContext dev_restorer;
+  dev_restorer.set_device(inference_params_.device_id);
+  embedding_cache_->lookup(table_id, d_vectors, h_keys, num_keys,
+                           inference_params_.hit_rate_threshold, stream);
+}
+
 void LookupSession::lookup(const void* const h_keys, float* const d_vectors, const size_t num_keys,
                            const size_t table_id, cudaStream_t stream) {
   if (inference_params_.fuse_embedding_table) {
@@ -267,7 +280,7 @@ void LookupSession::lookup(const void* const h_keys, float* const d_vectors, con
                            const size_t table_id) {
   const auto begin = std::chrono::high_resolution_clock::now();
   BaseUnit* start = profiler::start();
-
+  HCTR_LOG(INFO, ROOT, "DEBUG: HPS lookup called within lookup_session\n");
   if (inference_params_.fuse_embedding_table) {
     size_t fused_table_id = inference_params_.original_table_id_to_fused_table_id_map[table_id];
     this->lookup_with_table_fusion_impl(h_keys, d_vectors, num_keys, table_id, false,
@@ -275,6 +288,31 @@ void LookupSession::lookup(const void* const h_keys, float* const d_vectors, con
     HCTR_LIB_THROW(cudaStreamSynchronize(lookup_streams_[fused_table_id]));
   } else {
     this->lookup_impl(h_keys, d_vectors, num_keys, table_id, lookup_streams_[table_id]);
+    HCTR_LIB_THROW(cudaStreamSynchronize(lookup_streams_[table_id]));
+  }
+
+  ls_profiler_->end(start, "End-to-end lookup embedding keys for Lookup session");
+  const auto latency = std::chrono::high_resolution_clock::now() - begin;
+  HCTR_LOG_S(TRACE, WORLD) << "Lookup single table; number of keys " << num_keys << ", table id  "
+                           << table_id << "lookup latency: " << latency.count() / 1000 << " us."
+                           << std::endl;
+}
+
+void LookupSession::lookup_with_full_cache(const void* const h_keys,
+                                           const void* const h_keys_full_cache,
+                                           float* const d_vectors, const size_t num_keys,
+                                           const size_t table_id) {
+  const auto begin = std::chrono::high_resolution_clock::now();
+  BaseUnit* start = profiler::start();
+  HCTR_LOG(INFO, ROOT, "DEBUG: HPS lookup called within lookup_with_full_cache\n");
+  if (inference_params_.fuse_embedding_table) {
+    size_t fused_table_id = inference_params_.original_table_id_to_fused_table_id_map[table_id];
+    this->lookup_with_table_fusion_impl(h_keys, d_vectors, num_keys, table_id, false,
+                                        lookup_streams_[fused_table_id]);
+    HCTR_LIB_THROW(cudaStreamSynchronize(lookup_streams_[fused_table_id]));
+  } else {
+    this->lookup_impl_with_full_cache(h_keys, h_keys_full_cache, d_vectors, num_keys, table_id,
+                                      lookup_streams_[table_id]);
     HCTR_LIB_THROW(cudaStreamSynchronize(lookup_streams_[table_id]));
   }
 

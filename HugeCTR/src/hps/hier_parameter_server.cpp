@@ -210,7 +210,7 @@ HierParameterServer<TypeHashKey>::HierParameterServer(const parameter_server_con
   for (size_t i = 0; i < inference_params_array.size(); i++) {
     update_database_per_model(inference_params_array[i]);
   }
-
+  HCTR_PRINT(INFO, "Hari: initialize embedding cache for each embedding table of each model\n");
   // Initialize embedding cache for each embedding table of each model
   for (size_t i = 0; i < inference_params_array.size(); i++) {
     create_embedding_cache_per_model(inference_params_array[i]);
