@@ -187,12 +187,15 @@ EmbeddingCache<TypeHashKey>::EmbeddingCache(const InferenceParams& inference_par
     cache_config_.num_set_in_full_cache_.reserve(cache_config_.num_emb_table_);
     for (size_t i = 0; i < cache_config_.num_emb_table_; i++) {
       const size_t row_num = ps_config.embedding_key_count_.at(inference_params.model_name)[i];
+      const size_t row_num_non_full_cache = 14236965.0;
+      const size_t row_num_full_cache = 749313.0;
       // Hari: embedding cache per embedding table created here
-      size_t num_feature_in_cache = static_cast<size_t>(
-          static_cast<double>(cache_config_.cache_size_percentage_) * static_cast<double>(row_num));
+      size_t num_feature_in_cache =
+          static_cast<size_t>(static_cast<double>(cache_config_.cache_size_percentage_) *
+                              static_cast<double>(row_num_non_full_cache));
       // Hari: changes
       size_t num_feature_in_full_cache =
-          static_cast<size_t>(static_cast<double>(1.0) * static_cast<double>(row_num));
+          static_cast<size_t>(static_cast<double>(1.0) * static_cast<double>(row_num_full_cache));
 
       HCTR_LOG(
           INFO, ROOT,
@@ -334,6 +337,7 @@ template <typename TypeHashKey>
 void EmbeddingCache<TypeHashKey>::lookup(size_t const table_id, float* const d_vectors,
                                          const void* const h_keys,
                                          const void* const h_keys_full_cache, size_t const num_keys,
+                                         size_t const num_keys_full_cache,
                                          float const hit_rate_threshold, cudaStream_t stream) {
   // Hari: changes
   HCTR_LOG(INFO, ROOT, "DEBUG!!!! lookup called WITH h_keys_full_cache\n");
@@ -360,10 +364,14 @@ void EmbeddingCache<TypeHashKey>::lookup(size_t const table_id, float* const d_v
               cache_config_.model_name_, cache_config_.cuda_dev_id_, CACHE_SPACE_TYPE::WORKER));
     }
 
+    EmbeddingCacheWorkspace workspace_handler_full_cache = memory_block_full_cache->worker_buffer;
     // Copy the keys to device
     start = profiler::start();
     HCTR_LIB_THROW(cudaMemcpyAsync(workspace_handler.d_embeddingcolumns_[table_id], h_keys,
                                    num_keys * sizeof(TypeHashKey), cudaMemcpyHostToDevice, stream));
+    HCTR_LIB_THROW(cudaMemcpyAsync(workspace_handler_full_cache.d_embeddingcolumns_[table_id],
+                                   h_keys_full_cache, num_keys * sizeof(TypeHashKey),
+                                   cudaMemcpyHostToDevice, stream));
     ec_profiler_->end(start, "Copy the input to workspace of Embedding Cache",
                       ProfilerType_t::Timeliness, stream);
     start = profiler::start();
@@ -462,6 +470,7 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
                                    cudaMemcpyDeviceToHost, stream));
     HCTR_LIB_THROW(cudaStreamSynchronize(stream));
     ec_profiler_->end(start, "Deduplicate the input embedding key for Embedding Cache");
+    ec_profiler_->print();
 
     // Query
     const size_t query_length = workspace_handler.h_unique_length_[table_id];
@@ -479,6 +488,7 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
     // Set async flag
     HCTR_LIB_THROW(cudaStreamSynchronize(stream));
     ec_profiler_->end(start, "Native Embedding Cache Query API");
+    ec_profiler_->print();
     if (workspace_handler.h_unique_length_[table_id] == 0) {
       workspace_handler.h_hit_rate_[table_id] = 1.0;
     } else {
@@ -493,6 +503,7 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
     bool async_insert_flag{workspace_handler.h_hit_rate_[table_id] >= hit_rate_threshold};
     start = profiler::start(workspace_handler.h_hit_rate_[table_id], ProfilerType_t::Occupancy);
     ec_profiler_->end(start, "The hit rate of Embedding Cache", ProfilerType_t::Occupancy);
+    ec_profiler_->print();
 
     // Handle the missing keys mode 1: synchronous
     if (!async_insert_flag) {
@@ -502,6 +513,7 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
       // Wait for memory copy to complete
       HCTR_LIB_THROW(cudaStreamSynchronize(stream));
       ec_profiler_->end(start, "Missing key synchronization insert into Embedding Cache");
+      ec_profiler_->print();
       start = profiler::start();
       merge_emb_vec_async(workspace_handler.d_hit_emb_vec_[table_id],
                           workspace_handler.d_missing_emb_vec_[table_id],
@@ -510,6 +522,7 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
                           cache_config_.embedding_vec_size_[table_id], BLOCK_SIZE_, stream);
       ec_profiler_->end(start, "Merge output from Embedding Cache", ProfilerType_t::Timeliness,
                         stream);
+      ec_profiler_->print();
     }
     // mode 2: Asynchronous
     else {
@@ -532,6 +545,7 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
     static_cast<UniqueOp*>(workspace_handler.unique_op_obj_[table_id])->clear(stream);
     HCTR_LIB_THROW(cudaStreamSynchronize(stream));
     ec_profiler_->end(start, "decompress/deunique output from Embedding Cache");
+    ec_profiler_->print();
 
     // Handle the missing keys, mode 2: synchronous
     if (async_insert_flag) {
@@ -638,9 +652,15 @@ void EmbeddingCache<TypeHashKey>::lookup_from_device(size_t const table_id, floa
              static_cast<double>(workspace_handler.h_missing_length_[table_id]),
              static_cast<double>(workspace_handler_full_cache.h_missing_length_[table_id]));
 
+    workspace_handler_full_cache.h_hit_rate_[table_id] =
+        1.0 - (static_cast<double>(workspace_handler_full_cache.h_missing_length_[table_id]) /
+               static_cast<double>(workspace_handler_full_cache.h_unique_length_[table_id]));
+
     bool async_insert_flag{workspace_handler.h_hit_rate_[table_id] >= hit_rate_threshold};
     // Hari changes
-    HCTR_LOG(INFO, ROOT, "Cache hit rate!!!: %f\n", workspace_handler.h_hit_rate_[table_id]);
+    HCTR_LOG(INFO, ROOT, "Cache hit rate non_full_cache: %f, full_cache: %f",
+             workspace_handler.h_hit_rate_[table_id],
+             workspace_handler_full_cache.h_hit_rate_[table_id]);
     start = profiler::start(workspace_handler.h_hit_rate_[table_id], ProfilerType_t::Occupancy);
     ec_profiler_->end(start, "The hit rate of Embedding Cache", ProfilerType_t::Occupancy);
 

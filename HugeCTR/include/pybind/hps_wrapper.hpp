@@ -305,6 +305,7 @@ pybind11::array_t<float> HPS::lookup_with_full_cache(pybind11::array_t<size_t>& 
   pybind11::buffer_info key_buf = h_keys.request();
   pybind11::buffer_info key_buf_full_cache = h_keys_full_cache.request();
   size_t num_keys = key_buf.size;
+  size_t num_keys_full_cache = key_buf_full_cache.size;
   HCTR_CHECK_HINT(key_buf.ndim == 1, "Number of dimensions of h_keys must be one.");
   HCTR_LOG(INFO, ROOT, "HPS tensor shape of first dimension: %zu\n", key_buf.shape[0]);
   HCTR_CHECK_HINT(
@@ -337,12 +338,17 @@ pybind11::array_t<float> HPS::lookup_with_full_cache(pybind11::array_t<size_t>& 
   // Hari: lookup call (1)
   // lookup_session->lookup(key_ptr, d_vectors_per_table[table_id], num_keys, table_id);
   lookup_session->lookup_with_full_cache(key_ptr, key_ptr_full_cache, d_vectors_per_table[table_id],
-                                         num_keys, table_id);
+                                         num_keys, num_keys_full_cache, table_id);
   std::vector<size_t> vector_shape{static_cast<size_t>(key_buf.shape[0]),
                                    embedding_size_per_table[table_id]};
+  // std::vector<size_t> vector_shape_full_cache{static_cast<size_t>(key_buf_full_cache.shape[0]),
+  //                                  embedding_size_per_table[table_id]};
   pybind11::array_t<float> h_vectors(vector_shape);
   pybind11::buffer_info vector_buf = h_vectors.request();
+  // pybind11::array_t<float> h_vectors_full_cache(vector_shape_full_cache);
+  // pybind11::buffer_info vector_buf_full_cache = h_vectors_full_cache.request();
   float* vec_ptr = static_cast<float*>(vector_buf.ptr);
+  // float* vec_ptr_full_cache = static_cast<float*>(vector_buf.ptr);
   // Hari: synchronous cudaMemcpy call here
   HCTR_LIB_THROW(cudaMemcpy(vec_ptr, d_vectors_per_table[table_id],
                             num_keys * embedding_size_per_table[table_id] * sizeof(float),

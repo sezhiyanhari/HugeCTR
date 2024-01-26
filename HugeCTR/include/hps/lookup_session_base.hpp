@@ -33,7 +33,8 @@ class LookupSessionBase {
   virtual void lookup_impl_with_full_cache(const void* const h_keys,
                                            const void* const h_keys_full_cache,
                                            float* const d_vectors, const size_t num_keys,
-                                           const size_t table_id, cudaStream_t stream) = 0;
+                                           const size_t num_keys_full_cache, const size_t table_id,
+                                           cudaStream_t stream) = 0;
 
  public:
   virtual ~LookupSessionBase() = 0;
@@ -43,7 +44,8 @@ class LookupSessionBase {
 
   virtual void lookup(const void* h_keys, float* d_vectors, size_t num_keys, size_t table_id) = 0;
   virtual void lookup_with_full_cache(const void* h_keys, const void* h_keys_full_cache,
-                                      float* d_vectors, size_t num_keys, size_t table_id) = 0;
+                                      float* d_vectors, size_t num_keys, size_t num_keys_full_cache,
+                                      size_t table_id) = 0;
   virtual void lookup(const void* const h_keys, float* const d_vectors, const size_t num_keys,
                       const size_t table_id, cudaStream_t stream) = 0;
   virtual void lookup(const std::vector<const void*>& h_keys_per_table,
